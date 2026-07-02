@@ -1,0 +1,250 @@
+---
+title: "clean-rms"
+author: "Suvit Verma"
+date: "2026-05-27"
+output: html_document
+---
+
+I am creating this document to clean and map RMS Installations with current SeM.
+
+```{r}
+library(dplyr)
+library(lubridate)
+library(tidyr)
+library(purrr)
+library(readxl)
+library(stringr)
+```
+
+```{r}
+df_sem<-read.csv("hfsem.csv")
+df_sem<-df_sem|>select(-c(Open.Tickets,Closed.Tickets,No.of.Tickets.Logged))
+df_sem<-df_sem|>mutate(norm_state=tolower(gsub(" ","",State)),norm_district=tolower(gsub(" ","",District)),norm_block=tolower(gsub(" ","",Block)))
+```
+
+```{r}
+duplicates_all <- df |>group_by(Health.Facility.Name, NIN.OR.HFR, State, District, Block,Health.Facility.Type)|>filter(n() > 1)|>ungroup()
+```
+Duplicate -NIN or HFR
+```{r}
+duplicate_without_NIN<-df|>group_by(Health.Facility.Name, State, District, Block,Health.Facility.Type)|>filter(n() > 1)|>ungroup()
+```
+
+Duplicate District,State,District,Block
+```{r}
+duplicate_demo<- df |>group_by(Health.Facility.Name,State, District, Block)|>filter(n() > 1)|>ungroup()
+```
+
+See for duplicates in District Names
+
+```{r}
+
+duplicate_district <- df_sem %>%
+  mutate(norm_district = tolower(gsub(" ", "", District))) %>%
+  group_by(State, norm_district) %>%
+  summarise(variations = list(unique(District)),
+            count = n(),
+            .groups = "drop") %>%
+  filter(lengths(variations) > 1) %>%   # keep only groups with >1 spelling variation
+  arrange(State, norm_district)
+export_df <- duplicate_district %>%mutate(variations_str = sapply(variations, paste, collapse = ", ")) %>%
+select(State, norm_district, variations_str)
+write.csv(export_df, "duplicate_district.csv", row.names = FALSE)
+```
+
+Checking for Block
+```{r}
+df_sem <- df_sem %>%
+  mutate(norm_state=tolower(gsub(" ","",State)),norm_district = tolower(gsub(" ", "", District)),norm_block=tolower(gsub(" ","",Block)),norm_type=tolower(gsub(" ","",Health.Facility.Type)),norm_name=tolower(gsub(" ","",Health.Facility.Name)))
+
+duplicate_blocks <- df_sem %>%
+  mutate(norm_block = tolower(gsub(" ", "", Block))) %>%
+  group_by(State, norm_district, norm_block) %>%
+  summarise(variations = list(unique(Block)),
+            count = n(),
+            .groups = "drop") %>%
+  filter(lengths(variations) > 1) %>%
+  arrange(State, norm_district, norm_block)
+```
+
+Checking Duplicacy in Health Center Type
+```{r}
+unique_hf_type<-unique(df_sem$Health.Facility.Type)
+normalized_hf_type<-tolower(gsub(" ","",unique_hf_type))
+dup_norm <- normalized_hf_type[duplicated(normalized_hf_type)]
+dup_groups <- data.frame(original = unique_hf_type,
+                         normalized_hf_type = normalized_hf_type) %>%
+  group_by(normalized_hf_type) %>%
+  summarise(variations = list(original), .groups = "drop") %>%
+  filter(lengths(variations) > 1)
+```
+
+Here We will check if there are health center Names which repeat in different ways
+```{r}
+df_sem_non_alpha<-df_sem|>filter(grepl("[^A-Za-z ]",Health.Facility.Name))
+df_sem_NIN_text<-df_sem|>filter(grepl("^[A-Za-z ]+$",NIN.OR.HFR))
+df_sem_NIN_special<-df_sem|>filter(grepl("[^A-Za-z0-9 ]",NIN.OR.HFR))
+df_sem_NIN_missing <- df_sem|>filter(NIN.OR.HFR == "(missing value)")
+```
+
+
+Correcting the & in Ayush Health & Wellness Center
+
+```{r}
+df_sem$Health.Facility.Type<-gsub("Ayush Health & Wellness Center","Ayush Health and Wellness Center",df_sem$Health.Facility.Type)
+```
+
+Cleaning
+```{r}
+# Dropping SC from norm_name wherever norm_type=SC
+df_sem <- df_sem %>% mutate(norm_name = if_else(norm_type=="subcenter", str_replace(norm_name,"sc$",""), norm_name))
+
+# Removing -Block Name from HF Name wherever Applicable
+df_sem_block_name<-df_sem|>filter(str_detect(norm_name, paste0("-", norm_block, "$")))
+df_sem <- df_sem %>%
+  mutate(norm_name = if_else(str_detect(norm_name, paste0("-", norm_block, "$")),
+                             str_replace(norm_name, paste0("-", norm_block, "$"), ""),
+                             norm_name))
+```
+
+
+
+Now we will upload the RMS Installation Tracker
+
+```{r}
+df_rms<-read_excel("rms.xlsx",sheet = "tracker")
+
+# Now in rms sheet I will replace Centre with Center
+
+df_rms$`Type of health centre`<-gsub("Centre","Center",df_rms$`Type of health centre`)
+df_rms$`Type of health centre`<-gsub("Health & Wellness Center","Health and Wellness Center",df_rms$`Type of health centre`)
+df_rms<-df_rms|>select(`HFR ID/NIN`,`Name of health centre`,`State Name`,`District Name`,`Block Name`,`Type of health centre`,`Project Name/Code`,`Installation status`,`Date of Installation completed (DD-MM-YYYY)`,`RMS Meter Serial Number`,`RMS IP Number/MAC ID`)
+```
+
+Below is the list where there are more than one center
+```{r}
+duplicate_rms_all<-df_rms|>group_by(`Name of health centre`,`State Name`,`District Name`,`Block Name`,`Type of health centre`)|>filter(n()>1)|>ungroup()
+```
+
+Below are the center where in a block there are same center name
+```{r}
+duplicate_sdb_rms<-df_rms|>group_by(`Name of health centre`,`State Name`,`District Name`,`Block Name`)|>filter(n()>1)|>ungroup()
+duplicate_sdb_sem<-df_sem|>group_by(Health.Facility.Name,State,District,Block)|>filter(n()>1)|>ungroup()
+```
+
+Checking duplicates district in the RMS sheet
+```{r}
+df_rms<-df_rms|>mutate(norm_state=tolower(gsub(" ","",`State Name`)),norm_district=tolower(gsub(" ","",`District Name`)),norm_block=tolower(gsub(" ","",`Block Name`)),norm_type=tolower(gsub(" ","",`Type of health centre`)),norm_name=tolower(gsub(" ","",`Name of health centre`)))
+
+unique(df_rms$norm_state)
+
+duplicate_rms_district<-df_rms|>group_by(norm_state,norm_district)|>summarise(variations = list(unique(`District Name`)),count = n(),.groups = "drop")|>filter(lengths(variations)>1)|>arrange(norm_state,norm_district)
+```
+
+Checking for duplicates in Block Name
+
+```{r}
+duplicate_rms_block<-df_rms|>group_by(norm_state,norm_district,norm_block)|>summarise(variations = list(unique(`Block Name`)),count = n(),.groups = "drop")|>filter(lengths(variations)>1)|>arrange(norm_state,norm_district,norm_block)
+export_rms_block<-duplicate_rms_block|>mutate(variations_str = sapply(variations, paste, collapse = ", "))|>
+select(norm_state,norm_district,norm_block, variations_str)
+write.csv(export_rms_block,"duplicate_rms_block.csv",row.names = FALSE)
+```
+
+Cleaning Names in df_rms
+
+```{r}
+
+# Cleaning -block name
+df_rms <- df_rms %>%
+  mutate(norm_name = if_else(str_detect(norm_name, paste0("-", norm_block, "$")),
+                             str_replace(norm_name, paste0("-", norm_block, "$"), ""),
+                             norm_name))
+
+
+
+df_rms <- df_rms %>%
+  mutate(norm_name = str_trim(str_replace_all(norm_name, "subcentre", "")))
+df_rms <- df_rms %>%
+  mutate(norm_name = str_trim(str_replace(norm_name, "^phc", "")))
+df_rms <- df_rms %>%
+  mutate(norm_name = str_replace(norm_name, "primaryhealthcentre$", "phc"))
+df_rms <- df_rms %>%
+  mutate(norm_name = str_replace(norm_name, "subdivisionalhospital/th$", ""))
+df_rms <- df_rms %>%
+  mutate(norm_district = str_replace_all(norm_district, "ri-bhoi", "ribhoi"))
+# Replacing the SC in df_rms
+df_rms <- df_rms %>% mutate(norm_name = if_else(norm_state=="meghalaya" & norm_type %in% c("subcenter","healthandwellnesscenter"), str_replace(norm_name,"sc$",""), norm_name))
+
+# In Meghalaya replacing subcenter with healthandwellness center
+
+df_rms <- df_rms %>% mutate(norm_type = if_else(norm_state=="meghalaya" & norm_type=="subcenter","healthandwellnesscenter",norm_type))
+
+# In Assam Cleaning for MPHC
+df_rms <- df_rms %>% mutate(norm_name = if_else(norm_state=="assam" & norm_type=="miniprimaryhealthcenter", str_replace(norm_name,"mphc$",""), norm_name))
+# Replacing all SC from end in subcenter norm_type in df_rms
+df_rms <- df_rms %>% mutate(norm_name = if_else(norm_type=="subcenter", str_replace(norm_name,"sc$",""), norm_name))
+
+#replacing SC with subcenter
+df_rms <- df_rms %>% mutate(norm_type = if_else(norm_state=="arunachalpradesh" & norm_type=="sc","subcenter",norm_type))
+df_rms <- df_rms %>% mutate(norm_name = if_else(norm_state=="arunachalpradesh" & norm_type=="subcenter", str_replace(norm_name,"sc$",""), norm_name))
+
+# Cleaning HWC in subcenter Arunachal
+df_rms <- df_rms %>% mutate(norm_name = if_else(norm_state=="arunachalpradesh" & norm_type=="subcenter", str_replace(norm_name,"^hwc",""), norm_name))
+df_rms <- df_rms %>% mutate(norm_name = if_else(norm_state=="arunachalpradesh" & norm_type=="subcenter", str_replace(norm_name,"hwc$",""), norm_name))
+df_rms <- df_rms %>% mutate(norm_name = if_else(norm_state=="arunachalpradesh" & norm_type=="subcenter", str_replace(norm_name,"^sc",""), norm_name))
+df_rms <- df_rms %>% mutate(norm_name = if_else(norm_state=="arunachalpradesh" & norm_type=="healthandwellnesscenter", str_replace(norm_name,"hwc$",""), norm_name))
+#changing health and wellness center to subcenter
+df_rms <- df_rms %>% mutate(norm_type = if_else(norm_state=="arunachalpradesh" & norm_type=="healthandwellnesscenter","subcenter",norm_type))
+df_rms <- df_rms %>% mutate(norm_name = if_else(norm_state=="arunachalpradesh" & norm_type=="primaryhealthcenter", str_replace(norm_name,"phc$",""), norm_name))
+
+#replacing AHWC sites
+df_rms <- df_rms %>% mutate(norm_type = if_else(norm_state=="arunachalpradesh" & str_detect(norm_name,"^ahwc"),"ayushhealthandwellnesscenter",norm_type))
+df_rms <- df_rms %>% mutate(norm_name = if_else(norm_state=="arunachalpradesh" & norm_type=="ayushhealthandwellnesscenter", str_replace(norm_name,"^ahwc",""), norm_name))
+
+#replacing PHC in Primary Health Center
+df_rms <- df_rms %>% mutate(norm_name = if_else(norm_type=="primaryhealthcenter", str_replace(norm_name,"phc$",""), norm_name))
+df_rms <- df_rms %>% mutate(norm_name = if_else(norm_type=="primaryhealthcenter", str_replace(norm_name,"^phc",""), norm_name))
+
+# For MPHC
+df_rms <- df_rms %>% mutate(norm_name = if_else(norm_type=="primaryhealthcenter", str_replace(norm_name,"^mphc",""), norm_name))
+df_rms <- df_rms %>% mutate(norm_name = if_else(norm_type=="primaryhealthcenter", str_replace(norm_name,"mphc$",""), norm_name))
+
+#For SD
+df_rms <- df_rms %>% mutate(norm_name = if_else(norm_type=="primaryhealthcenter", str_replace(norm_name,"SD$",""), norm_name))
+df_rms <- df_rms %>% mutate(norm_name = if_else(norm_type=="primaryhealthcenter", str_replace(norm_name,"^SD",""), norm_name))
+
+#For SHC
+df_rms <- df_rms %>% mutate(norm_name = if_else(norm_type=="primaryhealthcenter", str_replace(norm_name,"shc$",""), norm_name))
+df_rms <- df_rms %>% mutate(norm_name = if_else(norm_type=="primaryhealthcenter", str_replace(norm_name,"^shc",""), norm_name))
+
+# Cleaning HWC
+df_rms <- df_rms %>% mutate(norm_name = if_else(norm_state=="assam" & norm_type=="healthandwellnesscenter", str_replace(norm_name,"hwc$",""), norm_name))
+df_rms <- df_rms %>% mutate(norm_name = if_else(norm_state=="assam" & norm_type=="healthandwellnesscenter", str_replace(norm_name,"^hwc",""), norm_name))
+
+# cleaning clinic
+df_rms <- df_rms %>% mutate(norm_name = if_else(norm_type=="healthclinic", str_replace(norm_name,"clinic$",""), norm_name))
+
+
+```
+
+
+
+```{r}
+df_rms_mapped <- df_rms %>%
+  left_join(
+    df_sem %>%
+      select(norm_state, norm_district, norm_block, norm_type, norm_name, NIN.OR.HFR),
+    by = c("norm_state", "norm_district", "norm_block", "norm_type", "norm_name")
+  ) %>%
+  rename(NIN.HFR = NIN.OR.HFR)
+
+df_unmapped <- df_rms_mapped %>%
+  filter(is.na(NIN.HFR))
+
+df_mapped<-df_rms_mapped|>filter(!is.na(NIN.HFR))
+```
+
+```{r}
+df_temp_pending<-df_unmapped|>filter(is.na(`HFR ID/NIN`))
+```
+
